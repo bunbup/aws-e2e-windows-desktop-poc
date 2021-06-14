@@ -1,0 +1,6 @@
+output/
+.gradle
+.idea
+.python-version
+build
+*.swp
