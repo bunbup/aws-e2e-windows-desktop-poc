@@ -1,0 +1,30 @@
+name: test-workflow
+on: [push]
+jobs:
+  tests:
+    runs-on: ubuntu-20.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@v2
+
+    - name: create private key file
+      run: 'echo "$TMP_VAULT_KEY" > vaultpass.txt'
+      shell: bash
+      env:
+        TMP_VAULT_KEY: ${{ secrets.VAULT_PASSWORD }}
+      
+    - name: install python
+      run: sudo apt -y update; sudo apt install python3; sudo apt install python3-pip
+
+    - name: install ansible
+      run: pip install -r requirements.txt
+                
+    - name: run ansible-playbook
+      run: ansible-playbook -i hosts aws-ec2-windows.yml --extra-vars "aws_access_key=${{ secrets.AWS_ACCESS_KEY }} aws_secret_key=${{ secrets.AWS_SECRET_KEY }} ansible_python_interpreter=/usr/bin/python3" --vault-password-file vaultpass.txt
+
+    - name: upload test reports
+      uses: actions/upload-artifact@v2
+      if: ${{ always() }} # IMPORTANT: Upload reports regardless of status
+      with:
+        name: reports
+        path: output

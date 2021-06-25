@@ -1,0 +1,135 @@
+- name: infrastructure setup
+  hosts: localhost
+  gather_facts: no
+  vars:
+    target_aws_region: us-west-2
+  vars_files:
+    - secret.yml
+  tasks:
+    - name: ensure instances are running
+      ec2:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: "{{ target_aws_region }}"
+        image: ami-0b9909553e2f757f4
+        instance_type: t2.medium
+        group_id: [ sg-037d28c862d833800 ]
+        wait: yes
+        wait_timeout: 500
+        exact_count: 1
+        count_tag:
+          Name: stock-win-ami-test
+        instance_tags:
+          Name: stock-win-ami-test
+        user_data: "{{ lookup('template', 'userdata.txt.j2') }}"
+      register: ec2_result
+
+    - name: wait for WinRM to answer on all hosts
+      wait_for:
+        port: 5986
+        host: "{{ item.public_ip }}"
+        timeout: 300
+      with_items: "{{ ec2_result.tagged_instances }}"
+
+
+    - name: add hosts to groups
+      add_host:
+        name: win-temp-{{ item.id }}
+        ansible_ssh_host: "{{ item.public_ip }}"
+        groups: win
+      with_items: "{{ ec2_result.tagged_instances }}"
+
+- name: web app setup
+  hosts: win
+  vars_files: [ "secret.yml" ]
+  tasks:
+    - name: Install Java
+      win_chocolatey:
+        name: "jdk8"
+        state: present
+        version: "8.0.211"
+
+    - name: Set Java_home
+      win_environment:
+        state: present
+        name: JAVA_HOME
+        value: 'c:\program files\java\jdk1.8.0_211'
+        level: machine
+
+    - name: Add Java to path
+      win_path:
+        elements:
+          - 'c:\program files\java\jdk1.8.0_211\bin'
+
+
+    - name: ensure test dir exists
+      win_file:
+        path: c:\e2e
+        state: directory
+
+    - name: ensure test-app is present
+      win_copy:
+        src: test-app
+        dest: c:\e2e
+
+    - name: execute tests
+      win_command: gradlew.bat test
+      async: 180
+      poll: 10
+      args: 
+        chdir: c:\e2e\test-app
+      register: testout
+      ignore_errors: yes
+
+    - name: zip reports
+      community.windows.win_zip:
+        src: C:\e2e\test-app\build\reports 
+        dest: C:\e2e\reports.zip
+
+    - name: zip test results
+      community.windows.win_zip:
+        src: C:\e2e\test-app\build\test-results
+        dest: C:\e2e\test-results.zip
+    
+    - name: Get test reports
+      fetch:
+        src: C:\e2e\reports.zip
+        dest: output/reports.zip
+        flat: true
+      ignore_errors: yes
+    - name: Get test results
+      fetch:
+        src: C:\e2e\test-results.zip
+        dest: output/test-results.zip
+        flat: true
+      ignore_errors: yes
+
+    - name: Get stdout output
+      local_action: copy content="{{ testout.stdout }}" dest="output/stdout.txt"
+      ignore_errors: yes
+    - name: Get stderr output
+      local_action: copy content="{{ testout.stderr }}" dest="output/stderr.txt"
+      ignore_errors: yes
+    - name: Get return code
+      local_action: copy content="{{ testout.rc }}" dest="output/return-code.txt"
+      ignore_errors: yes
+    - name: Get execution time
+      local_action: copy content="{{ testout.delta }}" dest="output/execution-time.txt"
+      ignore_errors: yes
+
+- name: Terminate EC2 instance
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+     region: us-west-2
+  vars_files:
+    - secret.yml
+  tasks:
+    - name: Terminate EC2 instance
+      ec2:
+        state: "absent"
+        instance_ids: "{{ ec2_result.instance_ids }}"
+        region: "{{ region }}"
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
